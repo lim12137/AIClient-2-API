@@ -372,9 +372,17 @@ export class KiroApiService {
     }
 
     async initializeAuth(forceRefresh = false) {
+        // 如果已有 accessToken 且不是强制刷新，直接返回
         if (this.accessToken && !forceRefresh) {
             console.debug('[Kiro Auth] Access token already available and not forced refresh.');
             return;
+        }
+
+        // 如果是强制刷新且已有 refreshToken，跳过凭证加载，直接刷新
+        if (forceRefresh && this.refreshToken) {
+            console.debug('[Kiro Auth] Force refresh requested, skipping credential loading.');
+            // 直接跳转到刷新逻辑
+            return this._refreshAccessToken();
         }
 
         // Helper to load credentials from a file
@@ -486,64 +494,95 @@ export class KiroApiService {
             console.warn(`[Kiro Auth] Error during credential loading: ${error.message}`);
         }
 
-        // Refresh token if forced or if access token is missing but refresh token is available
-        if (forceRefresh || (!this.accessToken && this.refreshToken)) {
-            if (!this.refreshToken) {
-                throw new Error('No refresh token available to refresh access token.');
-            }
-            try {
-                const requestBody = {
-                    refreshToken: this.refreshToken,
-                };
-
-                let refreshUrl = this.refreshUrl;
-                if (this.authMethod !== KIRO_CONSTANTS.AUTH_METHOD_SOCIAL) {
-                    refreshUrl = this.refreshIDCUrl;
-                    requestBody.clientId = this.clientId;
-                    requestBody.clientSecret = this.clientSecret;
-                    requestBody.grantType = 'refresh_token';
-                }
-
-                let response = null;
-                if (this.authMethod === KIRO_CONSTANTS.AUTH_METHOD_SOCIAL) {
-                    response = await this.axiosSocialRefreshInstance.post(refreshUrl, requestBody);
-                    console.log('[Kiro Auth] Token refresh social response: ok');
-                } else {
-                    response = await this.axiosInstance.post(refreshUrl, requestBody);
-                    console.log('[Kiro Auth] Token refresh idc response: ok');
-                }
-
-                if (response.data && response.data.accessToken) {
-                    this.accessToken = response.data.accessToken;
-                    this.refreshToken = response.data.refreshToken;
-                    this.profileArn = response.data.profileArn;
-                    const expiresIn = response.data.expiresIn;
-                    const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
-                    this.expiresAt = expiresAt;
-                    console.info('[Kiro Auth] Access token refreshed successfully');
-
-                    // Update the token file - use specified path if configured, otherwise use default
-                    const tokenFilePath = this.credsFilePath || path.join(this.credPath, KIRO_AUTH_TOKEN_FILE);
-                    const updatedTokenData = {
-                        accessToken: this.accessToken,
-                        refreshToken: this.refreshToken,
-                        expiresAt: expiresAt,
-                    };
-                    if (this.profileArn) {
-                        updatedTokenData.profileArn = this.profileArn;
-                    }
-                    await saveCredentialsToFile(tokenFilePath, updatedTokenData);
-                } else {
-                    throw new Error('Invalid refresh response: Missing accessToken');
-                }
-            } catch (error) {
-                console.error('[Kiro Auth] Token refresh failed:', error.message);
-                throw new Error(`Token refresh failed: ${error.message}`);
-            }
+        // Refresh token if access token is missing but refresh token is available
+        if (!this.accessToken && this.refreshToken) {
+            await this._refreshAccessToken();
         }
 
         if (!this.accessToken) {
             throw new Error('No access token available after initialization and refresh attempts.');
+        }
+    }
+
+    /**
+     * 内部方法：刷新 access token
+     * @private
+     */
+    async _refreshAccessToken() {
+        if (!this.refreshToken) {
+            throw new Error('No refresh token available to refresh access token.');
+        }
+
+        // Helper to save credentials to a file
+        const saveCredentialsToFile = async (filePath, newData) => {
+            try {
+                let existingData = {};
+                try {
+                    const fileContent = await fs.readFile(filePath, 'utf8');
+                    existingData = JSON.parse(fileContent);
+                } catch (readError) {
+                    if (readError.code === 'ENOENT') {
+                        console.debug(`[Kiro Auth] Token file not found, creating new one: ${filePath}`);
+                    } else {
+                        console.warn(`[Kiro Auth] Could not read existing token file ${filePath}: ${readError.message}`);
+                    }
+                }
+                const mergedData = { ...existingData, ...newData };
+                await fs.writeFile(filePath, JSON.stringify(mergedData, null, 2), 'utf8');
+                console.info(`[Kiro Auth] Updated token file: ${filePath}`);
+            } catch (error) {
+                console.error(`[Kiro Auth] Failed to write token to file ${filePath}: ${error.message}`);
+            }
+        };
+
+        try {
+            const requestBody = {
+                refreshToken: this.refreshToken,
+            };
+
+            let refreshUrl = this.refreshUrl;
+            if (this.authMethod !== KIRO_CONSTANTS.AUTH_METHOD_SOCIAL) {
+                refreshUrl = this.refreshIDCUrl;
+                requestBody.clientId = this.clientId;
+                requestBody.clientSecret = this.clientSecret;
+                requestBody.grantType = 'refresh_token';
+            }
+
+            let response = null;
+            if (this.authMethod === KIRO_CONSTANTS.AUTH_METHOD_SOCIAL) {
+                response = await this.axiosSocialRefreshInstance.post(refreshUrl, requestBody);
+                console.log('[Kiro Auth] Token refresh social response: ok');
+            } else {
+                response = await this.axiosInstance.post(refreshUrl, requestBody);
+                console.log('[Kiro Auth] Token refresh idc response: ok');
+            }
+
+            if (response.data && response.data.accessToken) {
+                this.accessToken = response.data.accessToken;
+                this.refreshToken = response.data.refreshToken;
+                this.profileArn = response.data.profileArn;
+                const expiresIn = response.data.expiresIn;
+                const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
+                this.expiresAt = expiresAt;
+                console.info('[Kiro Auth] Access token refreshed successfully');
+
+                // Update the token file - use specified path if configured, otherwise use default
+                const tokenFilePath = this.credsFilePath || path.join(this.credPath, KIRO_AUTH_TOKEN_FILE);
+                const updatedTokenData = {
+                    accessToken: this.accessToken,
+                    refreshToken: this.refreshToken,
+                    expiresAt: expiresAt,
+                };
+                if (this.profileArn) {
+                    updatedTokenData.profileArn = this.profileArn;
+                }
+                await saveCredentialsToFile(tokenFilePath, updatedTokenData);
+            } else {
+                throw new Error('Invalid refresh response: Missing accessToken');
+            }
+        } catch (error) {
+            console.error('[Kiro Auth] Token refresh failed:', error.message);
+            throw new Error(`Token refresh failed: ${error.message}`);
         }
     }
 
@@ -912,11 +951,39 @@ export class KiroApiService {
             }
             userInputMessageContext.toolResults = uniqueToolResults;
         }
+        const historyHasToolCalling = history.some(h =>
+            h.assistantResponseMessage?.toolUses ||
+            h.userInputMessage?.userInputMessageContext?.toolResults
+        );
+
         if (Object.keys(toolsContext).length > 0 && toolsContext.tools) {
             userInputMessageContext.tools = toolsContext.tools;
+        } else if (historyHasToolCalling && !toolsContext.tools) {
+            const toolNamesInHistory = new Set();
+            history.forEach(h => {
+                if (h.assistantResponseMessage?.toolUses) {
+                    h.assistantResponseMessage.toolUses.forEach(tu => {
+                        toolNamesInHistory.add(tu.name);
+                    });
+                }
+            });
+
+            if (toolNamesInHistory.size > 0) {
+                userInputMessageContext.tools = Array.from(toolNamesInHistory).map(name => ({
+                    toolSpecification: {
+                        name: name,
+                        description: "Tool",
+                        inputSchema: {
+                            json: {
+                                type: "object",
+                                properties: {}
+                            }
+                        }
+                    }
+                }));
+            }
         }
 
-        // 只有当 userInputMessageContext 有内容时才添加
         if (Object.keys(userInputMessageContext).length > 0) {
             userInputMessage.userInputMessageContext = userInputMessageContext;
         }
@@ -1459,12 +1526,33 @@ export class KiroApiService {
         const finalModel = MODEL_MAPPING[model] ? model : this.modelName;
         console.log(`[Kiro] Calling generateContentStream with model: ${finalModel} (real streaming)`);
 
-        let inputTokens = 0;
-        let contextUsagePercentage = null;
+        // 预先估算 inputTokens 作为保底值，如果收到 contextUsagePercentage 会被覆盖
+        let inputTokens = this.estimateInputTokens(requestBody);
         const messageId = `${uuidv4()}`;
 
-        let messageStartSent = false;
-        const bufferedEvents = [];
+        // 立即发送 message_start，不等待 contextUsagePercentage
+        yield {
+            type: "message_start",
+            message: {
+                id: messageId,
+                type: "message",
+                role: "assistant",
+                model: model,
+                usage: {
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cache_creation_input_tokens: 0,
+                    cache_read_input_tokens: 0
+                },
+                content: []
+            }
+        };
+
+        yield {
+            type: "content_block_start",
+            index: 0,
+            content_block: { type: "text", text: "" }
+        };
 
         try {
             let totalContent = '';
@@ -1474,54 +1562,16 @@ export class KiroApiService {
 
             for await (const event of this.streamApiReal('', finalModel, requestBody)) {
                 if (event.type === 'contextUsage' && event.percentage) {
-                    contextUsagePercentage = event.percentage;
-                    inputTokens = this.calculateInputTokensFromPercentage(contextUsagePercentage);
-
-                    if (!messageStartSent) {
-                        yield {
-                            type: "message_start",
-                            message: {
-                                id: messageId,
-                                type: "message",
-                                role: "assistant",
-                                model: model,
-                                usage: {
-                                    input_tokens: inputTokens,
-                                    output_tokens: 0,
-                                    cache_creation_input_tokens: 0,
-                                    cache_read_input_tokens: 0
-                                },
-                                content: []
-                            }
-                        };
-
-                        yield {
-                            type: "content_block_start",
-                            index: 0,
-                            content_block: { type: "text", text: "" }
-                        };
-
-                        messageStartSent = true;
-
-                        for (const buffered of bufferedEvents) {
-                            yield buffered;
-                        }
-                        bufferedEvents.length = 0;
-                    }
+                    // 收到 contextUsagePercentage 时更新 inputTokens，用于最终的 message_delta
+                    inputTokens = this.calculateInputTokensFromPercentage(event.percentage);
                 } else if (event.type === 'content' && event.content) {
                     totalContent += event.content;
 
-                    const contentEvent = {
+                    yield {
                         type: "content_block_delta",
                         index: 0,
                         delta: { type: "text_delta", text: event.content }
                     };
-
-                    if (messageStartSent) {
-                        yield contentEvent;
-                    } else {
-                        bufferedEvents.push(contentEvent);
-                    }
                 } else if (event.type === 'toolUse') {
                     const tc = event.toolUse;
                     // 工具调用事件（包含 name 和 toolUseId）
@@ -1583,12 +1633,6 @@ export class KiroApiService {
                 } catch (e) { }
                 toolCalls.push(currentToolCall);
                 currentToolCall = null;
-            }
-
-            // Fallback: 如果 contextUsagePercentage 没有收到，抛出错误
-            if (!messageStartSent) {
-                console.error('[Kiro Stream] contextUsagePercentage not received from API - cannot calculate accurate input tokens');
-                throw new Error('Failed to receive contextUsagePercentage from Kiro API. Input token calculation requires this data.');
             }
 
             // 检查文本内容中的 bracket 格式工具调用
@@ -1697,11 +1741,10 @@ export class KiroApiService {
     }
 
     /**
-     * @deprecated Use contextUsagePercentage from API response instead
-     * Calculate input tokens from request body using Claude's official tokenizer
+     * Estimate input tokens from request body using Claude's official tokenizer
+     * Used as fallback when contextUsagePercentage is not available from API
      */
     estimateInputTokens(requestBody) {
-        console.warn('[Kiro] estimateInputTokens() is deprecated. Use contextUsagePercentage from API response instead.');
         let totalTokens = 0;
 
         // Count system prompt tokens
