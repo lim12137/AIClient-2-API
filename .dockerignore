@@ -1,21 +1,57 @@
+# 依赖和缓存
 node_modules
 npm-debug.log
+.npm
+*.log
+
+# Git 相关
 .git
 .gitignore
+.gitattributes
+
+# Docker 相关
 Dockerfile
 .dockerignore
-.nyc_output
-coverage
-.nyc_output
-.coverage
-.env
-.env.local
-.env.*.local
-credentials.json
-*.md
-LICENSE
+docker/
+.dockerenv
+
+# 测试相关
+tests/
+coverage/
+.nyc_output/
 jest.config.js
 babel.config.js
-tests/
 run-tests.js
 test-summary.js
+*.test.js
+
+# 文档
+*.md
+!README.md
+docs/
+LICENSE
+
+# 构建相关
+.env*
+!.env.example
+credentials.json
+configs/*.json
+!configs/*.example
+
+# IDE 和编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 脚本文件（不需要在容器内）
+install-and-run.bat
+install-and-run.sh
+
+# 临时文件
+tmp/
+temp/
+logs/
+*.tmp
