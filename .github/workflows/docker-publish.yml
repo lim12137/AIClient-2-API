@@ -8,7 +8,7 @@ on:
 env:
   REGISTRY: docker.io
   # 这里保留了变量名，但实际上不会由于推送而使用 secrets
-  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/aiclient-2-api
+  IMAGE_NAME: lim12137/aiclient-2-api
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
